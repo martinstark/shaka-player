@@ -12,6 +12,27 @@ describe('ManifestTextParser', () => {
     parser = new shaka.hls.ManifestTextParser();
   });
 
+  /**
+   * Computed helper.
+   * @param {Object} options
+   * @return {shaka.hls.SegmentComputed}
+   */
+  function createComputed(options = {}) {
+    return /** @type {shaka.hls.SegmentComputed} */ ({
+      extinf: options['extinf'] || null,
+      extinfDuration: options['extinfDuration'] || 0,
+      map: options['map'] || null,
+      mapId: options['mapId'] || null,
+      gap: options['gap'] || null,
+      byterange: options['byterange'] || null,
+      discontinuity: options['discontinuity'] || null,
+      keys: options['keys'] || [],
+      bitrate: options['bitrate'] || 0,
+      dateTime: options['dateTime'] || null,
+      tiles: options['tiles'] || null,
+    });
+  }
+
   describe('parsePlaylist', () => {
     it('rejects invalid playlists', () => {
       verifyError('invalid playlist',
@@ -274,7 +295,11 @@ describe('ManifestTextParser', () => {
               new shaka.hls.Segment('https://test/test.mp4',
                   [
                     new shaka.hls.Tag(/* id= */ 2, 'EXTINF', [], '5.99467'),
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(
+                        /* id= */ 2, 'EXTINF', [], '5.99467'),
+                    extinfDuration: 5.99467,
+                  })),
             ],
           },
 
@@ -299,7 +324,14 @@ describe('ManifestTextParser', () => {
                     'EXTINF',
                     [new shaka.hls.Attribute('pid', '180')],
                     '5.99467'),
-              ]),
+              ], createComputed({
+                extinf: new shaka.hls.Tag(
+                    /* id= */ 2,
+                    'EXTINF',
+                    [new shaka.hls.Attribute('pid', '180')],
+                    '5.99467'),
+                extinfDuration: 5.99467,
+              })),
             ],
           },
 
@@ -327,7 +359,17 @@ describe('ManifestTextParser', () => {
                           new shaka.hls.Attribute('IV', '123'),
                         ]),
                     new shaka.hls.Tag(/* id= */ 3, 'EXTINF', [], '5.99467'),
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(
+                        /* id= */ 3, 'EXTINF', [], '5.99467'),
+                    extinfDuration: 5.99467,
+                    keys: [new shaka.hls.Tag(/* id= */ 1, 'EXT-X-KEY',
+                        [
+                          new shaka.hls.Attribute('METHOD', 'AES-128'),
+                          new shaka.hls.Attribute('URI', 'http://key.com'),
+                          new shaka.hls.Attribute('IV', '123'),
+                        ])],
+                  })),
             ],
           },
 
@@ -350,7 +392,11 @@ describe('ManifestTextParser', () => {
               new shaka.hls.Segment('test.mp4',
                   [
                     new shaka.hls.Tag(/* id= */ 2, 'EXTINF', [], '5.99467'),
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(
+                        /* id= */ 2, 'EXTINF', [], '5.99467'),
+                    extinfDuration: 5.99467,
+                  })),
             ],
           },
 
@@ -379,9 +425,17 @@ describe('ManifestTextParser', () => {
             ],
             segments: [
               new shaka.hls.Segment('uri',
-                  [new shaka.hls.Tag(2, 'EXTINF', [], '5')]),
+                  [new shaka.hls.Tag(2, 'EXTINF', [], '5')],
+                  createComputed({
+                    extinf: new shaka.hls.Tag(2, 'EXTINF', [], '5'),
+                    extinfDuration: 5,
+                  })),
               new shaka.hls.Segment('uri2',
-                  [new shaka.hls.Tag(3, 'EXTINF', [], '4')]),
+                  [new shaka.hls.Tag(3, 'EXTINF', [], '4')],
+                  createComputed({
+                    extinf: new shaka.hls.Tag(3, 'EXTINF', [], '4'),
+                    extinfDuration: 4,
+                  })),
             ],
           },
 
@@ -398,9 +452,17 @@ describe('ManifestTextParser', () => {
             ],
             segments: [
               new shaka.hls.Segment('uri',
-                  [new shaka.hls.Tag(2, 'EXTINF', [], '5')]),
+                  [new shaka.hls.Tag(2, 'EXTINF', [], '5')],
+                  createComputed({
+                    extinf: new shaka.hls.Tag(2, 'EXTINF', [], '5'),
+                    extinfDuration: 5,
+                  })),
               new shaka.hls.Segment('uri2',
-                  [new shaka.hls.Tag(3, 'EXTINF', [], '4')]),
+                  [new shaka.hls.Tag(3, 'EXTINF', [], '4')],
+                  createComputed({
+                    extinf: new shaka.hls.Tag(3, 'EXTINF', [], '4'),
+                    extinfDuration: 4,
+                  })),
             ],
           },
 
@@ -457,18 +519,31 @@ describe('ManifestTextParser', () => {
                   /* tags= */ [
                     new shaka.hls.Tag(3, 'EXTINF', [], '5'),
                     mapTag,
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(3, 'EXTINF', [], '5'),
+                    extinfDuration: 5,
+                    map: mapTag,
+                    mapId: 2,
+                  })),
               new shaka.hls.Segment(
                   /* verbatimSegmentUri= */ 'uri2',
                   /* tags= */ [
                     new shaka.hls.Tag(6, 'EXTINF', [], '2'),
                     mapTag,
                   ],
-                  /* partialSegments= */ partialSegments1),
+                  createComputed({
+                    extinf: new shaka.hls.Tag(6, 'EXTINF', [], '2'),
+                    extinfDuration: 2,
+                    map: mapTag,
+                    mapId: 2,
+                  }), /* partialSegments= */ partialSegments1),
               new shaka.hls.Segment(
                   /* verbatimSegmentUri= */ '',
                   /* tags= */ [mapTag],
-                  /* partialSegments= */ partialSegments2),
+                  createComputed({
+                    map: mapTag,
+                    mapId: 2,
+                  }), /* partialSegments= */ partialSegments2),
             ],
           },
           manifestTextWithPartialSegments);
@@ -521,11 +596,19 @@ describe('ManifestTextParser', () => {
                   /* tags= */ [
                     new shaka.hls.Tag(3, 'EXTINF', [], '5'),
                     mapTag,
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(3, 'EXTINF', [], '5'),
+                    extinfDuration: 5,
+                    map: mapTag,
+                    mapId: 2,
+                  })),
               new shaka.hls.Segment(
                   /* verbatimSegmentUri= */ '',
                   /* tags= */ [preloadMapTag],
-                  /* partialSegments= */ preloadSegment),
+                  createComputed({
+                    map: preloadMapTag,
+                    mapId: 4,
+                  }), /* partialSegments= */ preloadSegment),
             ],
           },
           manifestTextWithPreloadSegments);
