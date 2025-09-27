@@ -615,6 +615,190 @@ describe('ManifestTextParser', () => {
     });
   });
 
+  describe('gapCount logic in parsePlaylist', () => {
+    it('counts EXT-X-GAP tags in regular segments', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'segment1.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'segment2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'segment3.mp4\n',
+        '#EXTINF:5,\n',
+        'segment4.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(2);
+      expect(actualPlaylist.computed.segments.count).toBe(4);
+      expect(actualPlaylist.segments.length).toBe(4);
+
+      expect(actualPlaylist.segments[0].computed.gap).toBeNull();
+      expect(actualPlaylist.segments[1].computed.gap).toBeTruthy();
+      expect(actualPlaylist.segments[2].computed.gap).toBeTruthy();
+      expect(actualPlaylist.segments[3].computed.gap).toBeNull();
+    });
+
+    it('counts partial segments with GAP="YES"', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-VERSION:6\n',
+        '#EXT-X-TARGETDURATION:6\n',
+        '#EXT-X-PART-INF:PART-TARGET=2\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part1.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part2.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part3.mp4",GAP=YES\n',
+        'segment1.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part4.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part5.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part6.mp4"\n',
+        'segment2.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(2);
+      expect(actualPlaylist.computed.segments.count).toBe(2);
+      expect(actualPlaylist.computed.segments.isLowLatency).toBe(true);
+      expect(actualPlaylist.segments.length).toBe(2);
+
+      expect(actualPlaylist.segments[0].partialSegments.length).toBe(3);
+      expect(actualPlaylist.segments[1].partialSegments.length).toBe(3);
+    });
+
+    it('counts both regular and partial segment gaps', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-VERSION:6\n',
+        '#EXT-X-TARGETDURATION:6\n',
+        '#EXT-X-PART-INF:PART-TARGET=2\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part1.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part2.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part3.mp4"\n',
+        'segment1.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-GAP\n',
+        'segment2.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part4.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part5.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part6.mp4"\n',
+        'segment3.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(3);
+      expect(actualPlaylist.computed.segments.count).toBe(3);
+      expect(actualPlaylist.computed.segments.isLowLatency).toBe(true);
+      expect(actualPlaylist.segments.length).toBe(3);
+
+      expect(actualPlaylist.segments[0].computed.gap).toBeNull(); // has partial gap
+      expect(actualPlaylist.segments[1].computed.gap).toBeTruthy(); // EXT-X-GAP
+      expect(actualPlaylist.segments[2].computed.gap).toBeNull(); // has partial gap
+    });
+
+    it('handles multiple streams with gaps correctly', () => {
+      const videoPlaylistText = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'video1.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'video2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'video3.mp4\n',
+      ].join('');
+
+      const audioPlaylistText = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'audio1.mp4\n',
+        '#EXTINF:5,\n',
+        'audio2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'audio3.mp4\n',
+      ].join('');
+
+      const videoBuffer = shaka.util.StringUtils.toUTF8(videoPlaylistText);
+      const audioBuffer = shaka.util.StringUtils.toUTF8(audioPlaylistText);
+
+      const videoPlaylist = parser.parsePlaylist(videoBuffer);
+      const audioPlaylist = parser.parsePlaylist(audioBuffer);
+
+      expect(videoPlaylist.computed.segments.gapCount).toBe(2);
+      expect(audioPlaylist.computed.segments.gapCount).toBe(2);
+
+      const totalGaps = videoPlaylist.computed.segments.gapCount +
+                       audioPlaylist.computed.segments.gapCount;
+      expect(totalGaps).toBe(4);
+    });
+
+    it('handles zero gaps correctly', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'segment1.mp4\n',
+        '#EXTINF:5,\n',
+        'segment2.mp4\n',
+        '#EXTINF:5,\n',
+        'segment3.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(0);
+      expect(actualPlaylist.computed.segments.count).toBe(3);
+      expect(actualPlaylist.segments.length).toBe(3);
+
+      expect(actualPlaylist.segments[0].computed.gap).toBeNull();
+      expect(actualPlaylist.segments[1].computed.gap).toBeNull();
+      expect(actualPlaylist.segments[2].computed.gap).toBeNull();
+    });
+
+    it('handles EXT-X-PRELOAD-HINT with GAP=YES', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-VERSION:6\n',
+        '#EXT-X-TARGETDURATION:6\n',
+        '#EXT-X-PART-INF:PART-TARGET=2\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part1.mp4"\n',
+        '#EXT-X-PRELOAD-HINT:TYPE=PART,URI="part2.mp4",GAP=YES\n',
+        'segment1.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(1);
+      expect(actualPlaylist.computed.segments.count).toBe(1);
+      expect(actualPlaylist.computed.segments.isLowLatency).toBe(true);
+      expect(actualPlaylist.segments.length).toBe(1);
+
+      expect(actualPlaylist.segments[0].partialSegments.length).toBe(2);
+    });
+
+  });
+
   // TODO(#1672): Get a better type than "Object" here.
   /**
    * @param {!Object} expectedPlaylist
