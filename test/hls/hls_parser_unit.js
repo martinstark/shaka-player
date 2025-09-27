@@ -6432,4 +6432,263 @@ describe('HlsParser', () => {
     // Also check that the audio group IDs are distinct and correct
     expect(variant1.audio.groupId).not.toBe(variant2.audio.groupId);
   });
+
+  describe('gapCount logic', () => {
+    it('counts EXT-X-GAP tags in regular segments', async () => {
+      const master = [
+        '#EXTM3U\n',
+        '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1"\n',
+        'video\n',
+      ].join('');
+
+      const video = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'segment1.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'segment2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'segment3.mp4\n',
+        '#EXTINF:5,\n',
+        'segment4.mp4\n',
+      ].join('');
+
+      fakeNetEngine
+          .setResponseText('test:/master', master)
+          .setResponseText('test:/video', video)
+          .setResponseValue('test:/segment1.mp4', segmentData)
+          .setResponseValue('test:/segment2.mp4', segmentData)
+          .setResponseValue('test:/segment3.mp4', segmentData)
+          .setResponseValue('test:/segment4.mp4', segmentData);
+
+      const actual = await parser.start('test:/master', playerInterface);
+      await loadAllStreamsFor(actual);
+
+      expect(actual.gapCount).toBe(2);
+
+      const variant = actual.variants[0];
+      expect(variant.video).toBeTruthy();
+
+      await variant.video.createSegmentIndex();
+      const segmentIndex = variant.video.segmentIndex;
+      goog.asserts.assert(segmentIndex != null, 'Null segmentIndex!');
+
+      const available = shaka.media.SegmentReference.Status.AVAILABLE;
+      const missing = shaka.media.SegmentReference.Status.MISSING;
+
+      expect(segmentIndex.get(0).getStatus()).toBe(available);
+      expect(segmentIndex.get(1).getStatus()).toBe(missing);
+      expect(segmentIndex.get(2).getStatus()).toBe(missing);
+      expect(segmentIndex.get(3).getStatus()).toBe(available);
+    });
+
+    it('counts partial segments with GAP="YES"', async () => {
+      const master = [
+        '#EXTM3U\n',
+        '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1"\n',
+        'video\n',
+      ].join('');
+
+      const video = [
+        '#EXTM3U\n',
+        '#EXT-X-VERSION:6\n',
+        '#EXT-X-TARGETDURATION:6\n',
+        '#EXT-X-PART-INF:PART-TARGET=2\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part1.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part2.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part3.mp4",GAP=YES\n',
+        'segment1.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part4.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part5.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part6.mp4"\n',
+        'segment2.mp4\n',
+      ].join('');
+
+      fakeNetEngine
+          .setResponseText('test:/master', master)
+          .setResponseText('test:/video', video)
+          .setResponseValue('test:/part1.mp4', segmentData)
+          .setResponseValue('test:/part2.mp4', segmentData)
+          .setResponseValue('test:/part3.mp4', segmentData)
+          .setResponseValue('test:/part4.mp4', segmentData)
+          .setResponseValue('test:/part5.mp4', segmentData)
+          .setResponseValue('test:/part6.mp4', segmentData)
+          .setResponseValue('test:/segment1.mp4', segmentData)
+          .setResponseValue('test:/segment2.mp4', segmentData);
+
+      playerInterface.isLowLatencyMode = () => true;
+      const actual = await parser.start('test:/master', playerInterface);
+      await loadAllStreamsFor(actual);
+
+      expect(actual.gapCount).toBe(2);
+    });
+
+    it('counts both regular and partial segment gaps', async () => {
+      const master = [
+        '#EXTM3U\n',
+        '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1"\n',
+        'video\n',
+      ].join('');
+
+      const video = [
+        '#EXTM3U\n',
+        '#EXT-X-VERSION:6\n',
+        '#EXT-X-TARGETDURATION:6\n',
+        '#EXT-X-PART-INF:PART-TARGET=2\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part1.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part2.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part3.mp4"\n',
+        'segment1.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-GAP\n',
+        'segment2.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part4.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part5.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part6.mp4"\n',
+        'segment3.mp4\n',
+      ].join('');
+
+      fakeNetEngine
+          .setResponseText('test:/master', master)
+          .setResponseText('test:/video', video)
+          .setResponseValue('test:/part1.mp4', segmentData)
+          .setResponseValue('test:/part2.mp4', segmentData)
+          .setResponseValue('test:/part3.mp4', segmentData)
+          .setResponseValue('test:/part4.mp4', segmentData)
+          .setResponseValue('test:/part5.mp4', segmentData)
+          .setResponseValue('test:/part6.mp4', segmentData)
+          .setResponseValue('test:/segment1.mp4', segmentData)
+          .setResponseValue('test:/segment2.mp4', segmentData)
+          .setResponseValue('test:/segment3.mp4', segmentData);
+
+      playerInterface.isLowLatencyMode = () => true;
+      const actual = await parser.start('test:/master', playerInterface);
+      await loadAllStreamsFor(actual);
+
+      expect(actual.gapCount).toBe(3);
+    });
+
+    it('resets gapCount to 0 on each update', async () => {
+      const master = [
+        '#EXTM3U\n',
+        '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1"\n',
+        'video\n',
+      ].join('');
+
+      const video = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'segment1.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'segment2.mp4\n',
+      ].join('');
+
+      fakeNetEngine
+          .setResponseText('test:/master', master)
+          .setResponseText('test:/video', video)
+          .setResponseValue('test:/segment1.mp4', segmentData)
+          .setResponseValue('test:/segment2.mp4', segmentData);
+
+      const actual = await parser.start('test:/master', playerInterface);
+      await loadAllStreamsFor(actual);
+
+      expect(actual.gapCount).toBe(1);
+
+      await parser.update();
+      expect(actual.gapCount).toBe(1);
+    });
+
+    it('handles multiple streams with gaps correctly', async () => {
+      const master = [
+        '#EXTM3U\n',
+        '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",',
+        'CHANNELS="2",URI="audio"\n',
+        '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+        'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1"\n',
+        'video\n',
+      ].join('');
+
+      const video = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'video1.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'video2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'video3.mp4\n',
+      ].join('');
+
+      const audio = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'audio1.mp4\n',
+        '#EXTINF:5,\n',
+        'audio2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'audio3.mp4\n',
+      ].join('');
+
+      fakeNetEngine
+          .setResponseText('test:/master', master)
+          .setResponseText('test:/audio', audio)
+          .setResponseText('test:/video', video)
+          .setResponseValue('test:/video1.mp4', segmentData)
+          .setResponseValue('test:/video2.mp4', segmentData)
+          .setResponseValue('test:/video3.mp4', segmentData)
+          .setResponseValue('test:/audio1.mp4', segmentData)
+          .setResponseValue('test:/audio2.mp4', segmentData)
+          .setResponseValue('test:/audio3.mp4', segmentData);
+
+      const actual = await parser.start('test:/master', playerInterface);
+      await loadAllStreamsFor(actual);
+
+      expect(actual.gapCount).toBe(4);
+    });
+
+    it('handles zero gaps correctly', async () => {
+      const master = [
+        '#EXTM3U\n',
+        '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1"\n',
+        'video\n',
+      ].join('');
+
+      const video = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'segment1.mp4\n',
+        '#EXTINF:5,\n',
+        'segment2.mp4\n',
+        '#EXTINF:5,\n',
+        'segment3.mp4\n',
+      ].join('');
+
+      fakeNetEngine
+          .setResponseText('test:/master', master)
+          .setResponseText('test:/video', video)
+          .setResponseValue('test:/segment1.mp4', segmentData)
+          .setResponseValue('test:/segment2.mp4', segmentData)
+          .setResponseValue('test:/segment3.mp4', segmentData);
+
+      const actual = await parser.start('test:/master', playerInterface);
+      await loadAllStreamsFor(actual);
+
+      expect(actual.gapCount).toBe(0);
+    });
+  });
 });

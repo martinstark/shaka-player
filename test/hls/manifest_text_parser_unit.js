@@ -12,6 +12,27 @@ describe('ManifestTextParser', () => {
     parser = new shaka.hls.ManifestTextParser();
   });
 
+  /**
+   * Computed helper.
+   * @param {Object} options
+   * @return {shaka.hls.SegmentComputed}
+   */
+  function createComputed(options = {}) {
+    return /** @type {shaka.hls.SegmentComputed} */ ({
+      extinf: options['extinf'] || null,
+      extinfDuration: options['extinfDuration'] || 0,
+      map: options['map'] || null,
+      mapId: options['mapId'] || null,
+      gap: options['gap'] || null,
+      byterange: options['byterange'] || null,
+      discontinuity: options['discontinuity'] || null,
+      keys: options['keys'] || [],
+      bitrate: options['bitrate'] || 0,
+      dateTime: options['dateTime'] || null,
+      tiles: options['tiles'] || null,
+    });
+  }
+
   describe('parsePlaylist', () => {
     it('rejects invalid playlists', () => {
       verifyError('invalid playlist',
@@ -274,7 +295,11 @@ describe('ManifestTextParser', () => {
               new shaka.hls.Segment('https://test/test.mp4',
                   [
                     new shaka.hls.Tag(/* id= */ 2, 'EXTINF', [], '5.99467'),
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(
+                        /* id= */ 2, 'EXTINF', [], '5.99467'),
+                    extinfDuration: 5.99467,
+                  })),
             ],
           },
 
@@ -299,7 +324,14 @@ describe('ManifestTextParser', () => {
                     'EXTINF',
                     [new shaka.hls.Attribute('pid', '180')],
                     '5.99467'),
-              ]),
+              ], createComputed({
+                extinf: new shaka.hls.Tag(
+                    /* id= */ 2,
+                    'EXTINF',
+                    [new shaka.hls.Attribute('pid', '180')],
+                    '5.99467'),
+                extinfDuration: 5.99467,
+              })),
             ],
           },
 
@@ -327,7 +359,17 @@ describe('ManifestTextParser', () => {
                           new shaka.hls.Attribute('IV', '123'),
                         ]),
                     new shaka.hls.Tag(/* id= */ 3, 'EXTINF', [], '5.99467'),
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(
+                        /* id= */ 3, 'EXTINF', [], '5.99467'),
+                    extinfDuration: 5.99467,
+                    keys: [new shaka.hls.Tag(/* id= */ 1, 'EXT-X-KEY',
+                        [
+                          new shaka.hls.Attribute('METHOD', 'AES-128'),
+                          new shaka.hls.Attribute('URI', 'http://key.com'),
+                          new shaka.hls.Attribute('IV', '123'),
+                        ])],
+                  })),
             ],
           },
 
@@ -350,7 +392,11 @@ describe('ManifestTextParser', () => {
               new shaka.hls.Segment('test.mp4',
                   [
                     new shaka.hls.Tag(/* id= */ 2, 'EXTINF', [], '5.99467'),
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(
+                        /* id= */ 2, 'EXTINF', [], '5.99467'),
+                    extinfDuration: 5.99467,
+                  })),
             ],
           },
 
@@ -379,9 +425,17 @@ describe('ManifestTextParser', () => {
             ],
             segments: [
               new shaka.hls.Segment('uri',
-                  [new shaka.hls.Tag(2, 'EXTINF', [], '5')]),
+                  [new shaka.hls.Tag(2, 'EXTINF', [], '5')],
+                  createComputed({
+                    extinf: new shaka.hls.Tag(2, 'EXTINF', [], '5'),
+                    extinfDuration: 5,
+                  })),
               new shaka.hls.Segment('uri2',
-                  [new shaka.hls.Tag(3, 'EXTINF', [], '4')]),
+                  [new shaka.hls.Tag(3, 'EXTINF', [], '4')],
+                  createComputed({
+                    extinf: new shaka.hls.Tag(3, 'EXTINF', [], '4'),
+                    extinfDuration: 4,
+                  })),
             ],
           },
 
@@ -398,9 +452,17 @@ describe('ManifestTextParser', () => {
             ],
             segments: [
               new shaka.hls.Segment('uri',
-                  [new shaka.hls.Tag(2, 'EXTINF', [], '5')]),
+                  [new shaka.hls.Tag(2, 'EXTINF', [], '5')],
+                  createComputed({
+                    extinf: new shaka.hls.Tag(2, 'EXTINF', [], '5'),
+                    extinfDuration: 5,
+                  })),
               new shaka.hls.Segment('uri2',
-                  [new shaka.hls.Tag(3, 'EXTINF', [], '4')]),
+                  [new shaka.hls.Tag(3, 'EXTINF', [], '4')],
+                  createComputed({
+                    extinf: new shaka.hls.Tag(3, 'EXTINF', [], '4'),
+                    extinfDuration: 4,
+                  })),
             ],
           },
 
@@ -457,18 +519,31 @@ describe('ManifestTextParser', () => {
                   /* tags= */ [
                     new shaka.hls.Tag(3, 'EXTINF', [], '5'),
                     mapTag,
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(3, 'EXTINF', [], '5'),
+                    extinfDuration: 5,
+                    map: mapTag,
+                    mapId: 2,
+                  })),
               new shaka.hls.Segment(
                   /* verbatimSegmentUri= */ 'uri2',
                   /* tags= */ [
                     new shaka.hls.Tag(6, 'EXTINF', [], '2'),
                     mapTag,
                   ],
-                  /* partialSegments= */ partialSegments1),
+                  createComputed({
+                    extinf: new shaka.hls.Tag(6, 'EXTINF', [], '2'),
+                    extinfDuration: 2,
+                    map: mapTag,
+                    mapId: 2,
+                  }), /* partialSegments= */ partialSegments1),
               new shaka.hls.Segment(
                   /* verbatimSegmentUri= */ '',
                   /* tags= */ [mapTag],
-                  /* partialSegments= */ partialSegments2),
+                  createComputed({
+                    map: mapTag,
+                    mapId: 2,
+                  }), /* partialSegments= */ partialSegments2),
             ],
           },
           manifestTextWithPartialSegments);
@@ -521,15 +596,207 @@ describe('ManifestTextParser', () => {
                   /* tags= */ [
                     new shaka.hls.Tag(3, 'EXTINF', [], '5'),
                     mapTag,
-                  ]),
+                  ], createComputed({
+                    extinf: new shaka.hls.Tag(3, 'EXTINF', [], '5'),
+                    extinfDuration: 5,
+                    map: mapTag,
+                    mapId: 2,
+                  })),
               new shaka.hls.Segment(
                   /* verbatimSegmentUri= */ '',
                   /* tags= */ [preloadMapTag],
-                  /* partialSegments= */ preloadSegment),
+                  createComputed({
+                    map: preloadMapTag,
+                    mapId: 4,
+                  }), /* partialSegments= */ preloadSegment),
             ],
           },
           manifestTextWithPreloadSegments);
     });
+  });
+
+  describe('gapCount logic in parsePlaylist', () => {
+    it('counts EXT-X-GAP tags in regular segments', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'segment1.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'segment2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'segment3.mp4\n',
+        '#EXTINF:5,\n',
+        'segment4.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(2);
+      expect(actualPlaylist.computed.segments.count).toBe(4);
+      expect(actualPlaylist.segments.length).toBe(4);
+
+      expect(actualPlaylist.segments[0].computed.gap).toBeNull();
+      expect(actualPlaylist.segments[1].computed.gap).toBeTruthy();
+      expect(actualPlaylist.segments[2].computed.gap).toBeTruthy();
+      expect(actualPlaylist.segments[3].computed.gap).toBeNull();
+    });
+
+    it('counts partial segments with GAP="YES"', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-VERSION:6\n',
+        '#EXT-X-TARGETDURATION:6\n',
+        '#EXT-X-PART-INF:PART-TARGET=2\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part1.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part2.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part3.mp4",GAP=YES\n',
+        'segment1.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part4.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part5.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part6.mp4"\n',
+        'segment2.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(2);
+      expect(actualPlaylist.computed.segments.count).toBe(2);
+      expect(actualPlaylist.computed.segments.isLowLatency).toBe(true);
+      expect(actualPlaylist.segments.length).toBe(2);
+
+      expect(actualPlaylist.segments[0].partialSegments.length).toBe(3);
+      expect(actualPlaylist.segments[1].partialSegments.length).toBe(3);
+    });
+
+    it('counts both regular and partial segment gaps', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-VERSION:6\n',
+        '#EXT-X-TARGETDURATION:6\n',
+        '#EXT-X-PART-INF:PART-TARGET=2\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part1.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part2.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part3.mp4"\n',
+        'segment1.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-GAP\n',
+        'segment2.mp4\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part4.mp4"\n',
+        '#EXT-X-PART:DURATION=2,URI="part5.mp4",GAP=YES\n',
+        '#EXT-X-PART:DURATION=2,URI="part6.mp4"\n',
+        'segment3.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(3);
+      expect(actualPlaylist.computed.segments.count).toBe(3);
+      expect(actualPlaylist.computed.segments.isLowLatency).toBe(true);
+      expect(actualPlaylist.segments.length).toBe(3);
+
+      expect(actualPlaylist.segments[0].computed.gap).toBeNull(); // has partial gap
+      expect(actualPlaylist.segments[1].computed.gap).toBeTruthy(); // EXT-X-GAP
+      expect(actualPlaylist.segments[2].computed.gap).toBeNull(); // has partial gap
+    });
+
+    it('handles multiple streams with gaps correctly', () => {
+      const videoPlaylistText = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'video1.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'video2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'video3.mp4\n',
+      ].join('');
+
+      const audioPlaylistText = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'audio1.mp4\n',
+        '#EXTINF:5,\n',
+        'audio2.mp4\n',
+        '#EXTINF:5,\n',
+        '#EXT-X-GAP\n',
+        'audio3.mp4\n',
+      ].join('');
+
+      const videoBuffer = shaka.util.StringUtils.toUTF8(videoPlaylistText);
+      const audioBuffer = shaka.util.StringUtils.toUTF8(audioPlaylistText);
+
+      const videoPlaylist = parser.parsePlaylist(videoBuffer);
+      const audioPlaylist = parser.parsePlaylist(audioBuffer);
+
+      expect(videoPlaylist.computed.segments.gapCount).toBe(2);
+      expect(audioPlaylist.computed.segments.gapCount).toBe(2);
+
+      const totalGaps = videoPlaylist.computed.segments.gapCount +
+                       audioPlaylist.computed.segments.gapCount;
+      expect(totalGaps).toBe(4);
+    });
+
+    it('handles zero gaps correctly', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-PLAYLIST-TYPE:VOD\n',
+        '#EXTINF:5,\n',
+        'segment1.mp4\n',
+        '#EXTINF:5,\n',
+        'segment2.mp4\n',
+        '#EXTINF:5,\n',
+        'segment3.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(0);
+      expect(actualPlaylist.computed.segments.count).toBe(3);
+      expect(actualPlaylist.segments.length).toBe(3);
+
+      expect(actualPlaylist.segments[0].computed.gap).toBeNull();
+      expect(actualPlaylist.segments[1].computed.gap).toBeNull();
+      expect(actualPlaylist.segments[2].computed.gap).toBeNull();
+    });
+
+    it('handles EXT-X-PRELOAD-HINT with GAP=YES', () => {
+      const playlistText = [
+        '#EXTM3U\n',
+        '#EXT-X-VERSION:6\n',
+        '#EXT-X-TARGETDURATION:6\n',
+        '#EXT-X-PART-INF:PART-TARGET=2\n',
+        '#EXTINF:6,\n',
+        '#EXT-X-PART:DURATION=2,URI="part1.mp4"\n',
+        '#EXT-X-PRELOAD-HINT:TYPE=PART,URI="part2.mp4",GAP=YES\n',
+        'segment1.mp4\n',
+      ].join('');
+
+      const playlistBuffer = shaka.util.StringUtils.toUTF8(playlistText);
+      const actualPlaylist = parser.parsePlaylist(playlistBuffer);
+
+      expect(actualPlaylist.computed.segments.gapCount).toBe(1);
+      expect(actualPlaylist.computed.segments.count).toBe(1);
+      expect(actualPlaylist.computed.segments.isLowLatency).toBe(true);
+      expect(actualPlaylist.segments.length).toBe(1);
+
+      expect(actualPlaylist.segments[0].partialSegments.length).toBe(2);
+    });
+
   });
 
   // TODO(#1672): Get a better type than "Object" here.
