@@ -1766,4 +1766,697 @@ describe('HlsParser live', () => {
     return ManifestParser.makeReference(uri, start, end, baseUri, startByte,
         endByte, timestampOffset, partialReferences, tilesLayout, syncTime);
   }
+
+  it('preserves A/V EXTINF reconciliation across live updates', async () => {
+    config.hls.ignoreManifestProgramDateTime = true;
+    parser.configure(config);
+
+    // Master with separate AUDIO group
+    const masterPlaylist = [
+      '#EXTM3U\n',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",',
+      'URI="audio"\n',
+      '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+      'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1"\n',
+      'video\n',
+    ].join('');
+
+    // Video: 2 segments per disc block, 5s EXTINF
+    const videoInitial = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:0\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5,\n',
+      'v0.mp4\n',
+      '#EXTINF:5,\n',
+      'v1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5,\n',
+      'v2.mp4\n',
+      '#EXTINF:5,\n',
+      'v3.mp4\n',
+    ].join('');
+
+    // Audio: 2 segments per disc block, 5.01s EXTINF (AAC rounding)
+    const audioInitial = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:0\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5.01,\n',
+      'a0.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5.01,\n',
+      'a2.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a3.mp4\n',
+    ].join('');
+
+    // Updated: window slides — seq0 evicted, seq4 added
+    const videoUpdated = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:1\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5,\n',
+      'v1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5,\n',
+      'v2.mp4\n',
+      '#EXTINF:5,\n',
+      'v3.mp4\n',
+      '#EXTINF:5,\n',
+      'v4.mp4\n',
+    ].join('');
+
+    const audioUpdated = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:1\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5.01,\n',
+      'a1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5.01,\n',
+      'a2.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a3.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a4.mp4\n',
+    ].join('');
+
+    fakeNetEngine
+        .setResponseText('test:/master', masterPlaylist)
+        .setResponseText('test:/video', videoInitial)
+        .setResponseText('test:/audio', audioInitial)
+        .setResponseValue('test:/init.mp4', initSegmentData)
+        .setResponseValue('test:/v0.mp4', segmentData)
+        .setResponseValue('test:/v1.mp4', segmentData)
+        .setResponseValue('test:/v2.mp4', segmentData)
+        .setResponseValue('test:/v3.mp4', segmentData)
+        .setResponseValue('test:/v4.mp4', segmentData)
+        .setResponseValue('test:/a0.mp4', segmentData)
+        .setResponseValue('test:/a1.mp4', segmentData)
+        .setResponseValue('test:/a2.mp4', segmentData)
+        .setResponseValue('test:/a3.mp4', segmentData)
+        .setResponseValue('test:/a4.mp4', segmentData);
+
+    const manifest =
+        await parser.start('test:/master', playerInterface);
+
+    const actualVideo = manifest.variants[0].video;
+    const actualAudio = manifest.variants[0].audio;
+    await actualVideo.createSegmentIndex();
+    await actualAudio.createSegmentIndex();
+    goog.asserts.assert(actualVideo.segmentIndex != null, 'Null segmentIndex!');
+    goog.asserts.assert(actualAudio.segmentIndex != null, 'Null segmentIndex!');
+
+    // After initial load: disc boundary (block 1) should align
+    const videoRefs = Array.from(actualVideo.segmentIndex);
+    const audioRefs = Array.from(actualAudio.segmentIndex);
+
+    // Block 1 starts at 10s for video, should also be ~10s for audio
+    expect(Math.abs(videoRefs[2].startTime - audioRefs[2].startTime))
+        .toBeLessThan(0.001);
+
+    // Simulate live update: window slides
+    fakeNetEngine
+        .setResponseText('test:/video', videoUpdated)
+        .setResponseText('test:/audio', audioUpdated);
+
+    await delayForUpdatePeriod();
+
+    // After update: alignment should still hold
+    const videoIdx = actualVideo.segmentIndex;
+    const audioIdx = actualAudio.segmentIndex;
+    goog.asserts.assert(videoIdx != null, 'Null segmentIndex!');
+    goog.asserts.assert(audioIdx != null, 'Null segmentIndex!');
+    const videoRefsAfter = Array.from(videoIdx);
+    const audioRefsAfter = Array.from(audioIdx);
+
+    // Find disc boundary in updated segments (block 1 start)
+    for (let i = 0; i < videoRefsAfter.length; i++) {
+      const vRef = videoRefsAfter[i];
+      const aRef = audioRefsAfter[i];
+      if (i === 0 || videoRefsAfter[i - 1].discontinuitySequence !==
+          vRef.discontinuitySequence) {
+        expect(Math.abs(vRef.startTime - aRef.startTime))
+            .toBeLessThan(0.001);
+      }
+    }
+  });
+
+  it('live update starting inside non-zero-offset disc block', async () => {
+    config.hls.ignoreManifestProgramDateTime = true;
+    parser.configure(config);
+
+    const masterPlaylist = [
+      '#EXTM3U\n',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",',
+      'URI="audio"\n',
+      '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+      'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1"\n',
+      'video\n',
+    ].join('');
+
+    // Initial: v0-v3 (5s), a0-a3 (5.01s), disc at seg 2
+    const videoInitial = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:0\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5,\n',
+      'v0.mp4\n',
+      '#EXTINF:5,\n',
+      'v1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5,\n',
+      'v2.mp4\n',
+      '#EXTINF:5,\n',
+      'v3.mp4\n',
+    ].join('');
+
+    const audioInitial = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:0\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5.01,\n',
+      'a0.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5.01,\n',
+      'a2.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a3.mp4\n',
+    ].join('');
+
+    // Update 1: v1-v4, a1-a4 (window slides, starts inside disc 0)
+    const videoUpdate1 = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:1\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5,\n',
+      'v1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5,\n',
+      'v2.mp4\n',
+      '#EXTINF:5,\n',
+      'v3.mp4\n',
+      '#EXTINF:5,\n',
+      'v4.mp4\n',
+    ].join('');
+
+    const audioUpdate1 = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:1\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5.01,\n',
+      'a1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5.01,\n',
+      'a2.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a3.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a4.mp4\n',
+    ].join('');
+
+    // Update 2: v3-v6, a3-a6 (window slides INTO disc 1, no disc tag)
+    const videoUpdate2 = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:3\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:1\n',
+      '#EXTINF:5,\n',
+      'v3.mp4\n',
+      '#EXTINF:5,\n',
+      'v4.mp4\n',
+      '#EXTINF:5,\n',
+      'v5.mp4\n',
+      '#EXTINF:5,\n',
+      'v6.mp4\n',
+    ].join('');
+
+    const audioUpdate2 = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:3\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:1\n',
+      '#EXTINF:5.01,\n',
+      'a3.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a4.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a5.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a6.mp4\n',
+    ].join('');
+
+    fakeNetEngine
+        .setResponseText('test:/master', masterPlaylist)
+        .setResponseText('test:/video', videoInitial)
+        .setResponseText('test:/audio', audioInitial)
+        .setResponseValue('test:/init.mp4', initSegmentData)
+        .setResponseValue('test:/v0.mp4', segmentData)
+        .setResponseValue('test:/v1.mp4', segmentData)
+        .setResponseValue('test:/v2.mp4', segmentData)
+        .setResponseValue('test:/v3.mp4', segmentData)
+        .setResponseValue('test:/v4.mp4', segmentData)
+        .setResponseValue('test:/v5.mp4', segmentData)
+        .setResponseValue('test:/v6.mp4', segmentData)
+        .setResponseValue('test:/a0.mp4', segmentData)
+        .setResponseValue('test:/a1.mp4', segmentData)
+        .setResponseValue('test:/a2.mp4', segmentData)
+        .setResponseValue('test:/a3.mp4', segmentData)
+        .setResponseValue('test:/a4.mp4', segmentData)
+        .setResponseValue('test:/a5.mp4', segmentData)
+        .setResponseValue('test:/a6.mp4', segmentData);
+
+    const manifest =
+        await parser.start('test:/master', playerInterface);
+
+    const actualVideo = manifest.variants[0].video;
+    const actualAudio = manifest.variants[0].audio;
+    await actualVideo.createSegmentIndex();
+    await actualAudio.createSegmentIndex();
+    goog.asserts.assert(actualVideo.segmentIndex != null, 'Null segmentIndex!');
+    goog.asserts.assert(actualAudio.segmentIndex != null, 'Null segmentIndex!');
+
+    // Initial: disc boundary at seg 2 should align
+    const videoRefs0 = Array.from(actualVideo.segmentIndex);
+    const audioRefs0 = Array.from(actualAudio.segmentIndex);
+    expect(Math.abs(videoRefs0[2].startTime - audioRefs0[2].startTime))
+        .toBeLessThan(0.001);
+
+    // Update 1: window slides, starts inside disc 0
+    fakeNetEngine
+        .setResponseText('test:/video', videoUpdate1)
+        .setResponseText('test:/audio', audioUpdate1);
+    await delayForUpdatePeriod();
+
+    const videoRefs1 = Array.from(actualVideo.segmentIndex);
+    const audioRefs1 = Array.from(actualAudio.segmentIndex);
+    for (let i = 0; i < videoRefs1.length; i++) {
+      const vRef = videoRefs1[i];
+      const aRef = audioRefs1[i];
+      if (i === 0 || videoRefs1[i - 1].discontinuitySequence !==
+          vRef.discontinuitySequence) {
+        expect(Math.abs(vRef.startTime - aRef.startTime))
+            .toBeLessThan(0.001);
+      }
+    }
+
+    // Update 2: window slides INTO disc 1 (non-zero offset block)
+    // This is where double-application could occur via
+    // mediaSequenceToStartTime + audioDiscontinuityOffsets_
+    fakeNetEngine
+        .setResponseText('test:/video', videoUpdate2)
+        .setResponseText('test:/audio', audioUpdate2);
+    await delayForUpdatePeriod();
+
+    const videoRefs2 = Array.from(actualVideo.segmentIndex);
+    const audioRefs2 = Array.from(actualAudio.segmentIndex);
+
+    // All disc boundaries should still align after multiple updates
+    for (let i = 0; i < videoRefs2.length; i++) {
+      const vRef = videoRefs2[i];
+      const aRef = audioRefs2[i];
+      if (i === 0 || videoRefs2[i - 1].discontinuitySequence !==
+          vRef.discontinuitySequence) {
+        expect(Math.abs(vRef.startTime - aRef.startTime))
+            .toBeLessThan(0.001);
+      }
+    }
+
+    // Seg 3 startTime should be correct (not double-offset)
+    // Video seg 3 starts at 15s, audio seg 3 should be within 1ms
+    const vSeg3 = videoRefs2.find((r) => r.getUris()[0] === 'test:/v3.mp4');
+    const aSeg3 = audioRefs2.find((r) => r.getUris()[0] === 'test:/a3.mp4');
+    if (vSeg3 && aSeg3) {
+      expect(Math.abs(vSeg3.startTime - aSeg3.startTime))
+          .toBeLessThan(0.001);
+    }
+  });
+
+  it('prunes stale disc offsets during live window eviction', async () => {
+    config.hls.ignoreManifestProgramDateTime = true;
+    parser.configure(config);
+
+    const masterPlaylist = [
+      '#EXTM3U\n',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",',
+      'URI="audio"\n',
+      '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+      'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1"\n',
+      'video\n',
+    ].join('');
+
+    // Initial: v0-v5 (5s), a0-a5 (5.01s), disc at seg 2 and seg 4
+    // 3 disc blocks: block 0 (0-1), block 1 (2-3), block 2 (4-5)
+    const videoInitial = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:0\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5,\n',
+      'v0.mp4\n',
+      '#EXTINF:5,\n',
+      'v1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5,\n',
+      'v2.mp4\n',
+      '#EXTINF:5,\n',
+      'v3.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5,\n',
+      'v4.mp4\n',
+      '#EXTINF:5,\n',
+      'v5.mp4\n',
+    ].join('');
+
+    const audioInitial = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:0\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5.01,\n',
+      'a0.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5.01,\n',
+      'a2.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a3.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5.01,\n',
+      'a4.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a5.mp4\n',
+    ].join('');
+
+    // Update: window slides past disc 0 AND disc 1 boundary
+    // disc-seq 2, refs 4-7, only disc 2 block remains
+    const videoUpdated = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:4\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:2\n',
+      '#EXTINF:5,\n',
+      'v4.mp4\n',
+      '#EXTINF:5,\n',
+      'v5.mp4\n',
+      '#EXTINF:5,\n',
+      'v6.mp4\n',
+      '#EXTINF:5,\n',
+      'v7.mp4\n',
+    ].join('');
+
+    const audioUpdated = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:4\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:2\n',
+      '#EXTINF:5.01,\n',
+      'a4.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a5.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a6.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a7.mp4\n',
+    ].join('');
+
+    fakeNetEngine
+        .setResponseText('test:/master', masterPlaylist)
+        .setResponseText('test:/video', videoInitial)
+        .setResponseText('test:/audio', audioInitial)
+        .setResponseValue('test:/init.mp4', initSegmentData)
+        .setResponseValue('test:/v0.mp4', segmentData)
+        .setResponseValue('test:/v1.mp4', segmentData)
+        .setResponseValue('test:/v2.mp4', segmentData)
+        .setResponseValue('test:/v3.mp4', segmentData)
+        .setResponseValue('test:/v4.mp4', segmentData)
+        .setResponseValue('test:/v5.mp4', segmentData)
+        .setResponseValue('test:/v6.mp4', segmentData)
+        .setResponseValue('test:/v7.mp4', segmentData)
+        .setResponseValue('test:/a0.mp4', segmentData)
+        .setResponseValue('test:/a1.mp4', segmentData)
+        .setResponseValue('test:/a2.mp4', segmentData)
+        .setResponseValue('test:/a3.mp4', segmentData)
+        .setResponseValue('test:/a4.mp4', segmentData)
+        .setResponseValue('test:/a5.mp4', segmentData)
+        .setResponseValue('test:/a6.mp4', segmentData)
+        .setResponseValue('test:/a7.mp4', segmentData);
+
+    const manifest =
+        await parser.start('test:/master', playerInterface);
+
+    const actualVideo = manifest.variants[0].video;
+    const actualAudio = manifest.variants[0].audio;
+    await actualVideo.createSegmentIndex();
+    await actualAudio.createSegmentIndex();
+    goog.asserts.assert(actualVideo.segmentIndex != null, 'Null segmentIndex!');
+    goog.asserts.assert(actualAudio.segmentIndex != null, 'Null segmentIndex!');
+
+    // Initial: both disc boundaries should align
+    const videoRefs = Array.from(actualVideo.segmentIndex);
+    const audioRefs = Array.from(actualAudio.segmentIndex);
+    // Block 1 boundary at seg 2
+    expect(Math.abs(videoRefs[2].startTime - audioRefs[2].startTime))
+        .toBeLessThan(0.001);
+    // Block 2 boundary at seg 4
+    expect(Math.abs(videoRefs[4].startTime - audioRefs[4].startTime))
+        .toBeLessThan(0.001);
+
+    // Update: window slides past disc 0 and disc 1, only disc 2 remains
+    fakeNetEngine
+        .setResponseText('test:/video', videoUpdated)
+        .setResponseText('test:/audio', audioUpdated);
+    await delayForUpdatePeriod();
+
+    const videoRefsAfter = Array.from(actualVideo.segmentIndex);
+    const audioRefsAfter = Array.from(actualAudio.segmentIndex);
+
+    // Disc 2 boundary alignment should still hold after eviction
+    for (let i = 0; i < videoRefsAfter.length; i++) {
+      const vRef = videoRefsAfter[i];
+      const aRef = audioRefsAfter[i];
+      if (i === 0 || videoRefsAfter[i - 1].discontinuitySequence !==
+          vRef.discontinuitySequence) {
+        expect(Math.abs(vRef.startTime - aRef.startTime))
+            .toBeLessThan(0.001);
+      }
+    }
+
+    // Segments within the remaining disc 2 block should chain correctly
+    for (let i = 1; i < audioRefsAfter.length; i++) {
+      if (audioRefsAfter[i].discontinuitySequence ===
+          audioRefsAfter[i - 1].discontinuitySequence) {
+        expect(audioRefsAfter[i].startTime)
+            .toBeCloseTo(audioRefsAfter[i - 1].endTime, 5);
+      }
+    }
+  });
+
+  it('lazy-loaded live audio keeps first segment inside corrected disc block',
+      async () => {
+        config.hls.ignoreManifestProgramDateTime = true;
+        parser.configure(config);
+
+        const masterPlaylist = [
+          '#EXTM3U\n',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",',
+          'URI="audio_eng"\n',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="spa",',
+          'URI="audio_spa"\n',
+          '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+          'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1"\n',
+          'video\n',
+        ].join('');
+
+        // Initial: two blocks with a discontinuity boundary at seg 2.
+        const videoInitial = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5,\n',
+          'v0.mp4\n',
+          '#EXTINF:5,\n',
+          'v1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5,\n',
+          'v2.mp4\n',
+          '#EXTINF:5,\n',
+          'v3.mp4\n',
+        ].join('');
+
+        const audioEngInitial = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5.01,\n',
+          'a0.mp4\n',
+          '#EXTINF:5.01,\n',
+          'a1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.01,\n',
+          'a2.mp4\n',
+          '#EXTINF:5.01,\n',
+          'a3.mp4\n',
+        ].join('');
+
+        const audioSpaInitial = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5.02,\n',
+          's0.mp4\n',
+          '#EXTINF:5.02,\n',
+          's1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.02,\n',
+          's2.mp4\n',
+          '#EXTINF:5.02,\n',
+          's3.mp4\n',
+        ].join('');
+
+        // Live update: window starts inside disc-seq 1 (no disc tag in body).
+        const videoUpdated = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:3\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:1\n',
+          '#EXTINF:5,\n',
+          'v3.mp4\n',
+          '#EXTINF:5,\n',
+          'v4.mp4\n',
+          '#EXTINF:5,\n',
+          'v5.mp4\n',
+          '#EXTINF:5,\n',
+          'v6.mp4\n',
+        ].join('');
+
+        const audioEngUpdated = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:3\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:1\n',
+          '#EXTINF:5.01,\n',
+          'a3.mp4\n',
+          '#EXTINF:5.01,\n',
+          'a4.mp4\n',
+          '#EXTINF:5.01,\n',
+          'a5.mp4\n',
+          '#EXTINF:5.01,\n',
+          'a6.mp4\n',
+        ].join('');
+
+        const audioSpaUpdated = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:3\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:1\n',
+          '#EXTINF:5.02,\n',
+          's3.mp4\n',
+          '#EXTINF:5.02,\n',
+          's4.mp4\n',
+          '#EXTINF:5.02,\n',
+          's5.mp4\n',
+          '#EXTINF:5.02,\n',
+          's6.mp4\n',
+        ].join('');
+
+        fakeNetEngine
+            .setResponseText('test:/master', masterPlaylist)
+            .setResponseText('test:/video', videoInitial)
+            .setResponseText('test:/audio_eng', audioEngInitial)
+            .setResponseText('test:/audio_spa', audioSpaInitial)
+            .setResponseValue('test:/init.mp4', initSegmentData)
+            .setResponseValue('test:/v0.mp4', segmentData)
+            .setResponseValue('test:/v1.mp4', segmentData)
+            .setResponseValue('test:/v2.mp4', segmentData)
+            .setResponseValue('test:/v3.mp4', segmentData)
+            .setResponseValue('test:/v4.mp4', segmentData)
+            .setResponseValue('test:/v5.mp4', segmentData)
+            .setResponseValue('test:/v6.mp4', segmentData)
+            .setResponseValue('test:/a0.mp4', segmentData)
+            .setResponseValue('test:/a1.mp4', segmentData)
+            .setResponseValue('test:/a2.mp4', segmentData)
+            .setResponseValue('test:/a3.mp4', segmentData)
+            .setResponseValue('test:/a4.mp4', segmentData)
+            .setResponseValue('test:/a5.mp4', segmentData)
+            .setResponseValue('test:/a6.mp4', segmentData)
+            .setResponseValue('test:/s0.mp4', segmentData)
+            .setResponseValue('test:/s1.mp4', segmentData)
+            .setResponseValue('test:/s2.mp4', segmentData)
+            .setResponseValue('test:/s3.mp4', segmentData)
+            .setResponseValue('test:/s4.mp4', segmentData)
+            .setResponseValue('test:/s5.mp4', segmentData)
+            .setResponseValue('test:/s6.mp4', segmentData);
+
+        const manifest =
+            await parser.start('test:/master', playerInterface);
+
+        const actualVideo = manifest.variants[0].video;
+        const audioEn = manifest.variants[0].audio;
+        const audioEs = manifest.variants[1].audio;
+        await actualVideo.createSegmentIndex();
+        await audioEn.createSegmentIndex();
+        goog.asserts.assert(
+            actualVideo.segmentIndex != null, 'Null segmentIndex!');
+        goog.asserts.assert(audioEn.segmentIndex != null, 'Null segmentIndex!');
+
+        // Move active streams forward into a window that starts inside disc 1.
+        fakeNetEngine
+            .setResponseText('test:/video', videoUpdated)
+            .setResponseText('test:/audio_eng', audioEngUpdated)
+            .setResponseText('test:/audio_spa', audioSpaUpdated);
+        await delayForUpdatePeriod();
+
+        // Lazy-load alternate audio after the update.
+        await audioEs.createSegmentIndex();
+        goog.asserts.assert(audioEs.segmentIndex != null, 'Null segmentIndex!');
+        const spaRefs = Array.from(audioEs.segmentIndex);
+        expect(spaRefs.length).toBeGreaterThan(0);
+        expect(spaRefs[0].getUris()[0]).toBe('test:/s3.mp4');
+
+        // Ensure first segment in the corrected block is aligned with video.
+        const videoRefs = Array.from(actualVideo.segmentIndex);
+        const videoS3 = videoRefs.find(
+            (r) => r.getUris()[0] === 'test:/v3.mp4');
+        goog.asserts.assert(videoS3, 'Missing v3 segment');
+        expect(Math.abs(videoS3.startTime - spaRefs[0].startTime))
+            .toBeLessThan(0.001);
+      });
 });  // describe('HlsParser live')

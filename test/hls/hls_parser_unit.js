@@ -6988,4 +6988,491 @@ describe('HlsParser', () => {
     expect(manifest.variants[0].audio).toBeTruthy();
     expect(manifest.variants[0].audio.label).toBeNull();
   });
+
+  it('reconciles A/V EXTINF divergence across discontinuities', async () => {
+    const config = shaka.util.PlayerConfiguration.createDefault().manifest;
+    config.hls.ignoreManifestProgramDateTime = true;
+    parser.configure(config);
+
+    // Video: 2 segments per block, 5s each = 10s per block
+    // Audio: 2 segments per block, 5.01s each = 10.02s per block
+    // After disc 0: video block1 starts at 10, audio at 10.02 (20ms drift)
+    // After disc 1: video block2 starts at 20, audio at 20.04 (40ms drift)
+    const master = [
+      '#EXTM3U\n',
+      '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",URI="audio"\n',
+      '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+      'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1",CLOSED-CAPTIONS=NONE\n',
+      'video\n',
+    ].join('');
+
+    const video = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:0\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5,\n',
+      'v0.mp4\n',
+      '#EXTINF:5,\n',
+      'v1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5,\n',
+      'v2.mp4\n',
+      '#EXTINF:5,\n',
+      'v3.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5,\n',
+      'v4.mp4\n',
+      '#EXTINF:5,\n',
+      'v5.mp4\n',
+      '#EXT-X-ENDLIST\n',
+    ].join('');
+
+    const audio = [
+      '#EXTM3U\n',
+      '#EXT-X-TARGETDURATION:6\n',
+      '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+      '#EXT-X-MEDIA-SEQUENCE:0\n',
+      '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+      '#EXTINF:5.01,\n',
+      'a0.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a1.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5.01,\n',
+      'a2.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a3.mp4\n',
+      '#EXT-X-DISCONTINUITY\n',
+      '#EXTINF:5.01,\n',
+      'a4.mp4\n',
+      '#EXTINF:5.01,\n',
+      'a5.mp4\n',
+      '#EXT-X-ENDLIST\n',
+    ].join('');
+
+    fakeNetEngine
+        .setResponseText('test:/master', master)
+        .setResponseText('test:/audio', audio)
+        .setResponseText('test:/video', video)
+        .setResponseValue('test:/init.mp4', initSegmentData);
+
+    const manifest =
+        await parser.start('test:/master', playerInterface);
+
+    const actualVideo = manifest.variants[0].video;
+    await actualVideo.createSegmentIndex();
+    goog.asserts.assert(actualVideo.segmentIndex != null, 'Null segmentIndex!');
+    const actualAudio = manifest.variants[0].audio;
+    await actualAudio.createSegmentIndex();
+    goog.asserts.assert(actualAudio.segmentIndex != null, 'Null segmentIndex!');
+
+    const videoSegments = Array.from(actualVideo.segmentIndex);
+    const audioSegments = Array.from(actualAudio.segmentIndex);
+
+    // At each discontinuity boundary, audio should be anchored to video
+    for (let i = 0; i < videoSegments.length; i++) {
+      const vRef = videoSegments[i];
+      const aRef = audioSegments[i];
+      if (vRef.discontinuitySequence === aRef.discontinuitySequence) {
+        // First segment of each block should match within 1ms
+        if (i === 0 || videoSegments[i - 1].discontinuitySequence !==
+            vRef.discontinuitySequence) {
+          expect(Math.abs(vRef.startTime - aRef.startTime))
+              .toBeLessThan(0.001);
+        }
+      }
+    }
+
+    // Specifically: block 1 starts at 10s for both
+    expect(audioSegments[2].startTime).toBeCloseTo(videoSegments[2].startTime);
+    // Block 2 starts at 20s for both
+    expect(audioSegments[4].startTime).toBeCloseTo(videoSegments[4].startTime);
+  });
+
+  it('reconciles all loaded audio streams across discontinuities',
+      async () => {
+        const config = shaka.util.PlayerConfiguration.createDefault().manifest;
+        config.hls.ignoreManifestProgramDateTime = true;
+        parser.configure(config);
+
+        // Video: 2 segments per block, 5s each = 10s per block
+        // Audio eng: 2 segments per block, 5.01s each = 10.02s per block
+        // Audio spa: 2 segments per block, 5.02s each = 10.04s per block
+        // Different drift rates prove each stream is independently reconciled
+        const master = [
+          '#EXTM3U\n',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",',
+          'URI="audio_eng"\n',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="spa",',
+          'URI="audio_spa"\n',
+          '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+          'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1",',
+          'CLOSED-CAPTIONS=NONE\n',
+          'video\n',
+        ].join('');
+
+        const video = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5,\n',
+          'v0.mp4\n',
+          '#EXTINF:5,\n',
+          'v1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5,\n',
+          'v2.mp4\n',
+          '#EXTINF:5,\n',
+          'v3.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5,\n',
+          'v4.mp4\n',
+          '#EXTINF:5,\n',
+          'v5.mp4\n',
+          '#EXT-X-ENDLIST\n',
+        ].join('');
+
+        const audioEng = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5.01,\n',
+          'ae0.mp4\n',
+          '#EXTINF:5.01,\n',
+          'ae1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.01,\n',
+          'ae2.mp4\n',
+          '#EXTINF:5.01,\n',
+          'ae3.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.01,\n',
+          'ae4.mp4\n',
+          '#EXTINF:5.01,\n',
+          'ae5.mp4\n',
+          '#EXT-X-ENDLIST\n',
+        ].join('');
+
+        const audioSpa = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5.02,\n',
+          'as0.mp4\n',
+          '#EXTINF:5.02,\n',
+          'as1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.02,\n',
+          'as2.mp4\n',
+          '#EXTINF:5.02,\n',
+          'as3.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.02,\n',
+          'as4.mp4\n',
+          '#EXTINF:5.02,\n',
+          'as5.mp4\n',
+          '#EXT-X-ENDLIST\n',
+        ].join('');
+
+        fakeNetEngine
+            .setResponseText('test:/master', master)
+            .setResponseText('test:/audio_eng', audioEng)
+            .setResponseText('test:/audio_spa', audioSpa)
+            .setResponseText('test:/video', video)
+            .setResponseValue('test:/init.mp4', initSegmentData);
+
+        const manifest =
+            await parser.start('test:/master', playerInterface);
+
+        const actualVideo = manifest.variants[0].video;
+        await actualVideo.createSegmentIndex();
+        goog.asserts.assert(
+            actualVideo.segmentIndex != null, 'Null segmentIndex!');
+
+        // Load both audio streams before reconciliation assertions
+        const audioEn = manifest.variants[0].audio;
+        const audioEs = manifest.variants[1].audio;
+        await audioEn.createSegmentIndex();
+        await audioEs.createSegmentIndex();
+        goog.asserts.assert(
+            audioEn.segmentIndex != null, 'Null segmentIndex!');
+        goog.asserts.assert(
+            audioEs.segmentIndex != null, 'Null segmentIndex!');
+
+        const videoRefs = Array.from(actualVideo.segmentIndex);
+        const engRefs = Array.from(audioEn.segmentIndex);
+        const spaRefs = Array.from(audioEs.segmentIndex);
+
+        // Both audio streams should be anchored to video at each disc boundary
+        for (const audioRefs of [engRefs, spaRefs]) {
+          for (let i = 0; i < videoRefs.length; i++) {
+            const vRef = videoRefs[i];
+            const aRef = audioRefs[i];
+            if (i === 0 || videoRefs[i - 1].discontinuitySequence !==
+                vRef.discontinuitySequence) {
+              expect(Math.abs(vRef.startTime - aRef.startTime))
+                  .toBeLessThan(0.001);
+            }
+          }
+        }
+
+        // Block 1 starts at 10s for both audio tracks
+        expect(engRefs[2].startTime).toBeCloseTo(videoRefs[2].startTime);
+        expect(spaRefs[2].startTime).toBeCloseTo(videoRefs[2].startTime);
+        // Block 2 starts at 20s for both audio tracks
+        expect(engRefs[4].startTime).toBeCloseTo(videoRefs[4].startTime);
+        expect(spaRefs[4].startTime).toBeCloseTo(videoRefs[4].startTime);
+      });
+
+  it('reconciliation is idempotent when audio streams load sequentially',
+      async () => {
+        const config =
+            shaka.util.PlayerConfiguration.createDefault().manifest;
+        config.hls.ignoreManifestProgramDateTime = true;
+        parser.configure(config);
+
+        // Video: 5s, Audio eng: 5.01s, Audio spa: 5.02s
+        // 2 segments per disc block, 2 disc boundaries
+        const master = [
+          '#EXTM3U\n',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",',
+          'URI="audio_eng"\n',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="spa",',
+          'URI="audio_spa"\n',
+          '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+          'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1",',
+          'CLOSED-CAPTIONS=NONE\n',
+          'video\n',
+        ].join('');
+
+        const video = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5,\n',
+          'v0.mp4\n',
+          '#EXTINF:5,\n',
+          'v1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5,\n',
+          'v2.mp4\n',
+          '#EXTINF:5,\n',
+          'v3.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5,\n',
+          'v4.mp4\n',
+          '#EXTINF:5,\n',
+          'v5.mp4\n',
+          '#EXT-X-ENDLIST\n',
+        ].join('');
+
+        const audioEng = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5.01,\n',
+          'ae0.mp4\n',
+          '#EXTINF:5.01,\n',
+          'ae1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.01,\n',
+          'ae2.mp4\n',
+          '#EXTINF:5.01,\n',
+          'ae3.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.01,\n',
+          'ae4.mp4\n',
+          '#EXTINF:5.01,\n',
+          'ae5.mp4\n',
+          '#EXT-X-ENDLIST\n',
+        ].join('');
+
+        const audioSpa = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5.02,\n',
+          'as0.mp4\n',
+          '#EXTINF:5.02,\n',
+          'as1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.02,\n',
+          'as2.mp4\n',
+          '#EXTINF:5.02,\n',
+          'as3.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.02,\n',
+          'as4.mp4\n',
+          '#EXTINF:5.02,\n',
+          'as5.mp4\n',
+          '#EXT-X-ENDLIST\n',
+        ].join('');
+
+        fakeNetEngine
+            .setResponseText('test:/master', master)
+            .setResponseText('test:/audio_eng', audioEng)
+            .setResponseText('test:/audio_spa', audioSpa)
+            .setResponseText('test:/video', video)
+            .setResponseValue('test:/init.mp4', initSegmentData);
+
+        const manifest =
+            await parser.start('test:/master', playerInterface);
+
+        // Load video + eng audio first (reconciliation #1)
+        const actualVideo = manifest.variants[0].video;
+        await actualVideo.createSegmentIndex();
+        goog.asserts.assert(
+            actualVideo.segmentIndex != null, 'Null segmentIndex!');
+
+        const audioEn = manifest.variants[0].audio;
+        await audioEn.createSegmentIndex();
+        goog.asserts.assert(
+            audioEn.segmentIndex != null, 'Null segmentIndex!');
+
+        // Verify eng aligned to video after first reconciliation
+        const videoRefs = Array.from(actualVideo.segmentIndex);
+        const engRefsAfter1 = Array.from(audioEn.segmentIndex);
+        expect(Math.abs(
+            videoRefs[2].startTime - engRefsAfter1[2].startTime))
+            .toBeLessThan(0.001);
+        expect(Math.abs(
+            videoRefs[4].startTime - engRefsAfter1[4].startTime))
+            .toBeLessThan(0.001);
+
+        // Capture eng disc boundary times before second reconciliation
+        const engBlock1Before = engRefsAfter1[2].startTime;
+        const engBlock2Before = engRefsAfter1[4].startTime;
+
+        // Load spa audio (reconciliation #2 — re-processes eng)
+        const audioEs = manifest.variants[1].audio;
+        await audioEs.createSegmentIndex();
+        goog.asserts.assert(
+            audioEs.segmentIndex != null, 'Null segmentIndex!');
+
+        // Eng must NOT have been double-offset
+        const engRefsAfter2 = Array.from(audioEn.segmentIndex);
+        expect(engRefsAfter2[2].startTime).toBeCloseTo(engBlock1Before);
+        expect(engRefsAfter2[4].startTime).toBeCloseTo(engBlock2Before);
+
+        // Eng still aligned to video
+        expect(Math.abs(
+            videoRefs[2].startTime - engRefsAfter2[2].startTime))
+            .toBeLessThan(0.001);
+        expect(Math.abs(
+            videoRefs[4].startTime - engRefsAfter2[4].startTime))
+            .toBeLessThan(0.001);
+
+        // Spa also aligned to video
+        const spaRefs = Array.from(audioEs.segmentIndex);
+        expect(Math.abs(videoRefs[2].startTime - spaRefs[2].startTime))
+            .toBeLessThan(0.001);
+        expect(Math.abs(videoRefs[4].startTime - spaRefs[4].startTime))
+            .toBeLessThan(0.001);
+      });
+
+  it('reconciles when audio EXTINF is shorter than video (positive offset)',
+      async () => {
+        const config =
+            shaka.util.PlayerConfiguration.createDefault().manifest;
+        config.hls.ignoreManifestProgramDateTime = true;
+        parser.configure(config);
+
+        // Video: 5.01s EXTINF (longer), Audio: 5s EXTINF (shorter)
+        // Audio falls BEHIND video — offset should be positive
+        const master = [
+          '#EXTM3U\n',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud1",LANGUAGE="eng",',
+          'URI="audio"\n',
+          '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",',
+          'RESOLUTION=960x540,FRAME-RATE=60,AUDIO="aud1",',
+          'CLOSED-CAPTIONS=NONE\n',
+          'video\n',
+        ].join('');
+
+        const video = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5.01,\n',
+          'v0.mp4\n',
+          '#EXTINF:5.01,\n',
+          'v1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5.01,\n',
+          'v2.mp4\n',
+          '#EXTINF:5.01,\n',
+          'v3.mp4\n',
+          '#EXT-X-ENDLIST\n',
+        ].join('');
+
+        const audio = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXTINF:5,\n',
+          'a0.mp4\n',
+          '#EXTINF:5,\n',
+          'a1.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5,\n',
+          'a2.mp4\n',
+          '#EXTINF:5,\n',
+          'a3.mp4\n',
+          '#EXT-X-ENDLIST\n',
+        ].join('');
+
+        fakeNetEngine
+            .setResponseText('test:/master', master)
+            .setResponseText('test:/audio', audio)
+            .setResponseText('test:/video', video)
+            .setResponseValue('test:/init.mp4', initSegmentData);
+
+        const manifest =
+            await parser.start('test:/master', playerInterface);
+
+        const actualVideo = manifest.variants[0].video;
+        await actualVideo.createSegmentIndex();
+        goog.asserts.assert(
+            actualVideo.segmentIndex != null, 'Null segmentIndex!');
+        const actualAudio = manifest.variants[0].audio;
+        await actualAudio.createSegmentIndex();
+        goog.asserts.assert(
+            actualAudio.segmentIndex != null, 'Null segmentIndex!');
+
+        const videoSegments = Array.from(actualVideo.segmentIndex);
+        const audioSegments = Array.from(actualAudio.segmentIndex);
+
+        // Video block 1 starts at 10.02, audio at 10.0 (audio behind)
+        // Offset = 10.02 - 10.0 = +0.02 (positive, audio pushed forward)
+        // After reconciliation, disc boundary should align within 1ms
+        expect(Math.abs(
+            videoSegments[2].startTime - audioSegments[2].startTime))
+            .toBeLessThan(0.001);
+
+        // Audio disc boundary should have been pushed forward
+        // Unreconciled audio block 1 would start at 10.0; video at 10.02
+        expect(audioSegments[2].startTime).toBeCloseTo(10.02, 2);
+
+        // Segments within a block should chain correctly
+        expect(audioSegments[3].startTime)
+            .toBeCloseTo(audioSegments[2].endTime, 5);
+      });
 });
