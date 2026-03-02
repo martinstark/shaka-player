@@ -556,6 +556,60 @@ describe('MediaSourceEngine', () => {
     });
   });
 
+  describe('resync', () => {
+    beforeEach(async () => {
+      captureEvents(audioSourceBuffer, ['updateend', 'error']);
+      captureEvents(videoSourceBuffer, ['updateend', 'error']);
+      const initObject = new Map();
+      initObject.set(ContentType.AUDIO, fakeAudioStream);
+      initObject.set(ContentType.VIDEO, fakeVideoStream);
+      await mediaSourceEngine.init(initObject, /* sequenceMode= */ true);
+    });
+
+    it('skips correction below 150ms by default', async () => {
+      videoSourceBuffer.buffered =
+          createFakeBuffered([{start: 0, end: 10}]);
+      videoSourceBuffer.timestampOffset = 0;
+
+      await mediaSourceEngine.resync(ContentType.VIDEO, 10.1);
+
+      expect(videoSourceBuffer.timestampOffset).toBe(0);
+    });
+
+    it('applies correction above 150ms by default', async () => {
+      videoSourceBuffer.buffered =
+          createFakeBuffered([{start: 0, end: 10}]);
+      videoSourceBuffer.timestampOffset = 0;
+
+      await mediaSourceEngine.resync(ContentType.VIDEO, 10.2);
+
+      expect(videoSourceBuffer.timestampOffset).toBe(10.2);
+    });
+
+    it('uses 1ms threshold for discontinuities', async () => {
+      videoSourceBuffer.buffered =
+          createFakeBuffered([{start: 0, end: 10}]);
+      videoSourceBuffer.timestampOffset = 0;
+
+      // 50ms offset — below the default 150ms threshold but above 1ms
+      await mediaSourceEngine.resync(
+          ContentType.VIDEO, 10.05, /* isDiscontinuity= */ true);
+
+      expect(videoSourceBuffer.timestampOffset).toBe(10.05);
+    });
+
+    it('skips correction below 1ms for discontinuities', async () => {
+      videoSourceBuffer.buffered =
+          createFakeBuffered([{start: 0, end: 10}]);
+      videoSourceBuffer.timestampOffset = 0;
+
+      await mediaSourceEngine.resync(
+          ContentType.VIDEO, 10.0005, /* isDiscontinuity= */ true);
+
+      expect(videoSourceBuffer.timestampOffset).toBe(0);
+    });
+  });
+
   describe('appendBuffer', () => {
     beforeEach(async () => {
       requiresEC3InitSegments.and.returnValue(false);
