@@ -2280,6 +2280,69 @@ describe('HlsParser live', () => {
     }
   });
 
+  it('does not crash reconciliation on live updates with muxed audio',
+      async () => {
+        config.hls.ignoreManifestProgramDateTime = true;
+        parser.configure(config);
+
+        const master = [
+          '#EXTM3U\n',
+          '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",LANGUAGE="en",',
+          'NAME="English",DEFAULT=YES,AUTOSELECT=YES\n',
+          '#EXT-X-STREAM-INF:BANDWIDTH=200,CODECS="avc1,mp4a",AUDIO="audio"\n',
+          'video\n',
+        ].join('');
+
+        const mediaInitial = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MEDIA-SEQUENCE:0\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:0\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXTINF:5,\n',
+          'v0.mp4\n',
+          '#EXT-X-DISCONTINUITY\n',
+          '#EXTINF:5,\n',
+          'v1.mp4\n',
+        ].join('');
+
+        const mediaUpdated = [
+          '#EXTM3U\n',
+          '#EXT-X-TARGETDURATION:6\n',
+          '#EXT-X-MEDIA-SEQUENCE:1\n',
+          '#EXT-X-DISCONTINUITY-SEQUENCE:1\n',
+          '#EXT-X-MAP:URI="init.mp4",BYTERANGE="616@0"\n',
+          '#EXTINF:5,\n',
+          'v1.mp4\n',
+          '#EXTINF:5,\n',
+          'v2.mp4\n',
+        ].join('');
+
+        fakeNetEngine
+            .setResponseText('test:/master', master)
+            .setResponseText('test:/video', mediaInitial)
+            .setResponseValue('test:/init.mp4', initSegmentData)
+            .setResponseValue('test:/v0.mp4', segmentData)
+            .setResponseValue('test:/v1.mp4', segmentData)
+            .setResponseValue('test:/v2.mp4', segmentData);
+
+        const manifest =
+            await parser.start('test:/master', playerInterface);
+
+        const variant = manifest.variants[0];
+        expect(variant.audio).toBeTruthy();
+        expect(variant.audio.isAudioMuxedInVideo).toBe(true);
+        await variant.video.createSegmentIndex();
+        await variant.audio.createSegmentIndex();
+
+        fakeNetEngine.setResponseText('test:/video', mediaUpdated);
+        await delayForUpdatePeriod();
+
+        // If reconciliation crashes while iterating the empty muxed-audio
+        // index, this test will fail before reaching this assertion.
+        expect(Array.from(variant.video.segmentIndex).length).toBeGreaterThan(0);
+      });
+
   it('lazy-loaded live audio keeps first segment inside corrected disc block',
       async () => {
         config.hls.ignoreManifestProgramDateTime = true;
